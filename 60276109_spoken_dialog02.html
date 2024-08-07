@@ -1,0 +1,375 @@
+<html lang="ja">
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<meta http-equiv="Content-Style-Type" content="text/css">
+<meta http-equiv="Content-Script-Type" content="text/javascript">
+<title>Spoken Dialog by Javascript</title>
+</head>
+<body>
+
+<h1>音声対話プログラム</h1>
+
+<p>
+<button id="startButton">start</button>
+<button id="stopButton">stop</button>
+</p>
+
+<p>
+<div id="resultOutput"></div>
+</p>
+
+<p>
+<button id="BGMPLAY">BGMPLAY</button>
+<button id="BGMSTOP">BGMSTOP</button>
+</p>
+
+<script>
+
+const URL = "https://jlp.yahooapis.jp/NLUService/V2/analyze?appid="; // APIのリクエストURL
+const APPID = "dj00aiZpPXphalFFN2ZaTmlpZSZzPWNvbnN1bWVyc2VjcmV0Jng9ODA-"; // あなたのアプリケーションID
+const queryURL = URL + APPID;
+
+const startButton = document.querySelector('#startButton'); // 開始ボタン
+const stopButton = document.querySelector('#stopButton'); // 停止ボタン
+const resultOutput = document.querySelector('#resultOutput'); // 結果出力エリア
+
+if (!'SpeechSynthesisUtterance' in window) {
+    alert("あなたのブラウザはSpeech Synthesis APIに未対応です。");
+}
+const tts = new SpeechSynthesisUtterance(); // TTSインスタンスを生成
+//tts.text = textForm.value; // テキストを設定
+tts.lang = "ja-JP"; // 言語(日本語)、英語の場合はen-US
+tts.rate = 1.0; // 速度
+tts.pitch = 1.0; // 声の高さ
+tts.volume = 1.0; // 音量
+
+SpeechRecognition = webkitSpeechRecognition || SpeechRecognition;
+if (!'SpeechRecognition' in window) {
+    alert("あなたのブラウザはSpeech Recognition APIに未対応です。");
+}
+
+const asr = new SpeechRecognition(); // ASRインスタンスを生成
+asr.lang = "ja-JP"; // 言語（日本語）
+asr.interimResults = true; // 途中結果出力をオン
+asr.continuous = true; // 継続入力をオン
+
+let output = ''; // 出力
+let textArray = []; // 過去の認識結果を記録する配列
+let listeningForCommand = false; // ウエイクワード後の音声認識フラグ
+
+
+// 応答の定義（ハッシュ）    
+var response = {
+    "誰":["わたしはプログラムです","undefined"],
+    "歳":["私は0歳です","undefined"],
+    "元気":["私に調子は関係ありません","undefined"],
+    "食べ物":["何も食べません","undefined"],
+    
+    // 追加された文字列の組み合わせで回答が変わる
+    "今日,天気":["今日は雨です","undefined"],
+    "明日,天気":["明日は晴れです","undefined"],
+    "今日,天気,晴":["違います。今日は雨です。","undefined"],
+    "今日,天気,雨":["そうです","undefined"],
+    "明日,天気,晴":["そうです","undefined"],
+    "明日,天気,雨":["違います。明日は晴れです。","undefined"],
+    
+    //リンクを表示する
+    "和歌山,天気": ["和歌山県の天気予報を表示します", "https://weather.yahoo.co.jp/weather/jp/30/"],
+    "大阪,天気": ["大阪府の天気予報を表示します", "https://weather.yahoo.co.jp/weather/jp/27/"],
+    "京都,天気": ["京都府の天気予報を表示します", "https://weather.yahoo.co.jp/weather/jp/26/"],
+    "奈良,天気": ["奈良県の天気予報を表示します", "https://weather.yahoo.co.jp/weather/jp/29/"],
+    "兵庫,天気": ["兵庫県の天気予報を表示します", "https://weather.yahoo.co.jp/weather/jp/28/"],
+    
+    // 過去にさかのぼった結果によって回答が変わる
+    "興味":["そんなに私のことが知りたいのですか","undefined"],
+    
+    // 特定の波形を鳴らす
+    "サイン波":["サイン波に変更します", "undefined"],
+    "矩形波":["矩形波に変更します", "undefined"],
+    "ノコギリ波":["ノコギリ波に変更します", "undefined"],
+    "三角波":["三角波に変更します", "undefined"]
+    
+};
+
+// ウエイクワードの定義
+var wake_word = "OK.*コンピューター";
+
+
+//追加課題実行用メソッド（その回の認識結果と過去の結果の入った配列を引数に取る）
+function keyword(newText, textArray) {
+  let lastText = '';
+  let webpage = 'undefined';
+  let key;
+  let ret;
+
+  // 過去にさかのぼる際に必要な文字列だけの配列
+  let specialWords = ["誰", "歳", "食べ物"];
+  // 過去にさかのぼる際に必要なカウンター
+  let count = 0;
+  
+  // 文字列を全て確認
+  keys = Object.keys(response);
+  keys.forEach(function(key) {
+    let flag = true;
+    key.split(',').forEach(function(word) {
+      let pattern = new RegExp(word);
+      let flag_test = pattern.test(newText);
+      flag = flag && flag_test;
+    });
+    if(flag){
+      ret = response[key];
+      lastText = ret[0];
+      webpage = ret[1];
+      console.log(key + " : " + lastText);
+    }
+  });
+  
+  textArray.push(newText);
+  // 直近3つのデータを見るために抽出
+  let recentTexts = textArray.slice(-3);
+  
+  // 直近３回分を特定の3つの単語が入っているかどうか調べて、カウンターを変更する
+  for (let j = 0; j < recentTexts.length; j++) {
+    for (let k = 0; k < specialWords.length; k++) {
+      if (recentTexts[j].indexOf(specialWords[k]) !== -1) {
+        count++;
+      }
+    }
+  }
+
+  // カウンターが３以上、つまり直近3回とも、特定の種類のこと（プログラム個人に対する質問）だとするとlastTextを「興味」に変更
+  if (count >= 3) {
+    key = '興味';
+    ret = response[key];
+    lastText = ret[0];
+    webpage = ret[1];
+    console.log(key + " : " + lastText);
+    
+  }
+  
+  // lastTextが空の時はそのまま元の文字列を返し、何か入っていればlastTextを返す
+  if (lastText === '') {
+    return [lastText,webpage, true];
+  } else {
+    return [lastText,webpage, false];
+  }
+}
+
+let type = "sine";
+
+// 波形変更
+function BGMChange(key) {
+  let node = ["sine", "square", "sawtooth", "triangle"];  
+
+  switch(key) {
+    case "サイン波":
+      type = node[0];
+      break;
+    case "矩形波":
+      type = node[1];
+      break;
+    case "ノコギリ波":
+      type = node[2];
+      break;
+    case "三角波":
+      type = node[3];
+      break;
+    default:
+      type = type;
+  }
+}
+  
+// BGM再生用プログラム
+let ctx;
+var oscillator;
+var isPlaying = false; // 再生中
+
+document.querySelector("#BGMPLAY").addEventListener("click", () => {
+  window.AudioContext = window.AudioContext || window.webkitAudioContext;
+  
+  
+  if (!ctx) {
+    ctx = new AudioContext();
+  } else {
+    ctx.resume().then(() => {
+      console.log('AudioContext resumed');
+    }).catch(e => console.error('AudioContext resume failed', e));
+  }
+  
+  // 二重再生を防ぐ
+  if(isPlaying && oscillator) {
+    oscillator.stop();
+    oscillator.disconnect();
+    console.log('ストップされました');
+    isPlaying = false;
+  }
+  
+  oscillator = ctx.createOscillator();
+  oscillator.type = type; // sine, square, sawtooth, triangle
+  console.log('type:', type);
+  oscillator.frequency.setValueAtTime(440, ctx.currentTime); // 440Hz
+  oscillator.connect(ctx.destination);
+  oscillator.start();
+  isPlaying = true;
+});
+
+// 再生停止
+document.querySelector("#BGMSTOP").addEventListener("click", () => {
+  if (isPlaying) {
+    oscillator.stop();
+    oscillator.disconnect();
+    isPlaying = false;
+  }
+});
+
+
+function findKey(obj, target) {
+    for (const [key, value] of Object.entries(obj)) {
+        if (value[0] === target) {
+            return key;
+        }
+    }
+    return null; // 値が見つからない場合は null を返す
+}
+    
+  
+
+
+
+// 認識結果が出力されたときのイベントハンドラ
+asr.onresult = function(event){
+  let transcript = event.results[event.resultIndex][0].transcript; // 結果文字列
+  let transcript_previous = null; 
+  
+  if(event.resultIndex > 0){
+      transcript_previous = event.results[event.resultIndex - 1][0].transcript;
+  }
+  
+  let resultText = '';
+  let text = '';
+  let webpage;
+  let apiRequestNeeded;
+
+  let output_not_final = '';
+      
+  if (event.results[event.resultIndex].isFinal) { // 結果が確定（Final）のとき
+    if(new RegExp(wake_word).test(transcript_previous)){
+          asr.abort(); // 音声認識を停止
+          listeningForCommand = true; // コマンド入力を待つ状態にする
+    }
+      
+    if (listeningForCommand) {
+      asr.abort(); // 音声認識を停止
+      
+      
+          
+      let newText = transcript.replace(/\r?\n/g,'').replace(/\0/g,''); // 余計な文字の削除
+  
+      // 追加課題用のメソッドを使用
+      [text, webpage, apiRequestNeeded] = keyword(newText, textArray);
+      
+      if (apiRequestNeeded) {
+      
+        // HTTPリクエストの準備
+        var postdata = {
+          "id": "1234-1", // JSON-RPC2.0 id、値は任意で、指定した値がレスポンスのidになる。
+          "jsonrpc" : "2.0", // APIで固定
+          "method" : "jlp.nluservice.analyze", // APIで固定
+          "params" : { "q" : newText }, // 解析対象のテキスト 
+        };
+        var jsondata = JSON.stringify(postdata);
+  
+        const request = new XMLHttpRequest();
+        request.open('POST', queryURL, true);
+        request.setRequestHeader('Content-Type', 'application/json');
+        request.responseType = 'json'; // レスポンスはJSON形式に変換
+      
+        // HTTPの状態が変化したときのイベントハンドラ
+        request.onreadystatechange = function() {
+          if (this.readyState == 4 && this.status == 200) {
+            // readyState == 4 操作完了
+            // status == 200 リクエスト成功（HTTPレスポンス）
+              
+            let res = this.response; // 結果はJSON形式
+
+            Object.keys(res.result).forEach(function (key) {
+              console.log(key + ": " + res.result[key])
+            });
+        
+            // METHOD が SAY のときのみ
+            if(res.result.METHOD == "SAY"){
+              text = res.result.PARAM_TEXT_TTS || res.result.PARAM_TEXT;
+              webpage = "undefined";
+            }
+            
+            tts.text = text;
+             
+            // 再生が終了（end）ときのイベントハンドラ（終了したときに実行される）
+            tts.onend = function(event){
+              if(webpage != 'undefined'){
+                location.href = webpage; // ページを移動
+              }
+              asr.start(); // 音声認識を再開
+            }
+
+            speechSynthesis.speak(tts); // 再生
+            resultText = transcript + " => " + text + '<br>';
+            console.log('resultText1:', resultText);
+            
+          }
+          resultOutput.innerHTML = output + resultText + output_not_final; // 応答結果の出力
+          output += resultText;
+        };
+        
+        
+        // HTTPリクエストの実行
+        request.send(jsondata);
+      } else {
+        tts.text = text;
+        // 再生が終了（end）ときのイベントハンドラ（終了したときに実行される）
+        tts.onend = function(event){
+          if(webpage != 'undefined'){
+            location.href = webpage; // ページを移動
+          }
+          asr.start(); // 音声認識を再開
+        } 
+
+        speechSynthesis.speak(tts); // 再生
+        resultText = transcript + " => " + text + '<br>';
+        console.log('resultText2:', resultText);
+        resultOutput.innerHTML = output + resultText + output_not_final; // 応答結果の出力
+        output += resultText;
+        
+        let key = findKey(response, text);
+        BGMChange(key);
+        
+      }
+      
+    } 
+    
+  } else { // 結果がまだ未確定のとき
+    output_not_final = '<span style="color:#ddd;">' + transcript + '</span>';
+    resultOutput.innerHTML = output + resultText + output_not_final;
+    output += resultText;
+  }
+}
+
+// 開始ボタンのイベントハンドラ
+startButton.addEventListener('click', function() {
+  asr.start();
+})
+
+// 停止ボタンのイベントハンドラ
+stopButton.addEventListener('click', function() {
+  asr.stop();
+  listeningForCommand = false;
+})
+
+</script>
+
+<p>
+Web Services by Yahoo! JAPAN （https://developer.yahoo.co.jp/sitemap/）
+</p>
+</body>
+</html>
